@@ -1938,6 +1938,18 @@
             if (aListLabel) aListLabel.textContent = total;
         }
 
+        function buildCustomQuestionsMapFromGames(gamesArr) {
+            var qMap = {};
+            if (!Array.isArray(gamesArr)) return qMap;
+            for (var i = 0; i < gamesArr.length; i++) {
+                var g = gamesArr[i];
+                if (g && g.id && Array.isArray(g.questions) && g.questions.length > 0) {
+                    qMap[g.id] = g.questions;
+                }
+            }
+            return qMap;
+        }
+
         function persistGamesList(syncFirebase) {
             try {
                 localStorage.setItem(STORAGE_KEYS.CUSTOM_GAMES, JSON.stringify(ALL_GAMES));
@@ -1947,10 +1959,21 @@
             if (!document.getElementById('adminDashboardPane').classList.contains('hidden')) {
                 renderAdminGamesList();
             }
-            if (syncFirebase !== false && firebaseDbRef) {
-                try {
-                    firebaseDbRef.ref('games').set(ALL_GAMES);
-                } catch (e) {}
+            if (syncFirebase !== false) {
+                if (!firebaseDbRef) {
+                    var cfgRaw = localStorage.getItem(STORAGE_KEYS.FB_CFG) || DEFAULT_FB_CFG;
+                    if (cfgRaw) initFirebaseFromRaw(cfgRaw);
+                }
+                if (firebaseDbRef) {
+                    try {
+                        var qMap = buildCustomQuestionsMapFromGames(ALL_GAMES);
+                        firebaseDbRef.ref('customQuestions').set(qMap);
+                        firebaseDbRef.ref('games').set(ALL_GAMES);
+                    } catch (e) {
+                        console.error('Lỗi ghi Firebase:', e);
+                        showToast('Chưa ghi được lên Firebase (kiểm tra Rules nhánh games/customQuestions)!', '⚠️');
+                    }
+                }
             }
         }
 
@@ -5200,13 +5223,49 @@
                     }
                 });
 
-                // Đồng bộ Danh sách Trò chơi từ Firebase (nếu giáo viên đã lưu lên cloud)
+                // Đồng bộ Danh sách Trò chơi từ Firebase (hỗ trợ cả dạng Array và Object)
                 firebaseDbRef.ref('games').on('value', function(snap) {
                     var val = snap.val();
-                    if (Array.isArray(val) && val.length > 0) {
-                        ALL_GAMES = val.map(function(item, idx) { return normalizeLoadedGame(item, idx); });
+                    var list = Array.isArray(val) ? val : (val && typeof val === 'object' ? Object.keys(val).map(function(k) { return val[k]; }) : null);
+                    if (Array.isArray(list) && list.length > 0) {
+                        ALL_GAMES = list.map(function(item, idx) { return normalizeLoadedGame(item, idx); });
                         localStorage.setItem(STORAGE_KEYS.CUSTOM_GAMES, JSON.stringify(ALL_GAMES));
                         updateGamesCountIndicators();
+                        applyFilters();
+                        if (!document.getElementById('adminDashboardPane').classList.contains('hidden')) {
+                            renderAdminGamesList();
+                        }
+                    }
+                });
+
+                // Đồng bộ riêng nhánh customQuestions (nếu có cập nhật câu hỏi lẻ theo từng game)
+                firebaseDbRef.ref('customQuestions').on('value', function(snap) {
+                    var qMap = snap.val();
+                    if (!qMap || typeof qMap !== 'object' || !Array.isArray(ALL_GAMES)) return;
+                    var changed = false;
+                    for (var i = 0; i < ALL_GAMES.length; i++) {
+                        var g = ALL_GAMES[i];
+                        var remoteQs = qMap[g.id];
+                        if (Array.isArray(remoteQs) && remoteQs.length > 0) {
+                            var normalized = normalizeLoadedGame({
+                                id: g.id,
+                                title: g.title,
+                                subject: g.subject,
+                                grade: g.grade,
+                                type: g.type,
+                                icon: g.icon,
+                                isCustomQuestions: true,
+                                questions: remoteQs
+                            }, i);
+                            if (JSON.stringify(g.questions) !== JSON.stringify(normalized.questions)) {
+                                ALL_GAMES[i].questions = normalized.questions;
+                                ALL_GAMES[i].isCustomQuestions = true;
+                                changed = true;
+                            }
+                        }
+                    }
+                    if (changed) {
+                        localStorage.setItem(STORAGE_KEYS.CUSTOM_GAMES, JSON.stringify(ALL_GAMES));
                         applyFilters();
                         if (!document.getElementById('adminDashboardPane').classList.contains('hidden')) {
                             renderAdminGamesList();
